@@ -1,118 +1,145 @@
-import streamlit as st
 import os
 import sys
 
-# Ensure relative imports resolve correctly
+import pandas as pd
+import streamlit as st
+
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from ui.utils import check_system_status, calculate_route_recommendation
 from ui.components import (
-    inject_custom_css,
-    render_header,
-    render_sidebar,
-    render_metric_cards,
-    render_recommended_route_card,
-    render_candidate_table,
-    render_folium_map,
-    render_download_section,
-    render_footer,
+    PREFS, HINTS, OPT_COLORS, html, inject_css, render_hero, render_empty, skeleton_html, render_callout,
+    rank_options, render_ticket, render_map, render_compare, render_radar, render_footer,
 )
 
-# Set Streamlit Page Configuration
-st.set_page_config(
-    page_title="Multimodal Transport Recommendation System",
-    page_icon="🚆",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Multimodal Transport", page_icon="🚆", layout="wide", initial_sidebar_state="collapsed")
 
-# Inject Custom White-Blue Theme CSS
-inject_custom_css()
+st.session_state.setdefault("src", "Guatemala City")
+st.session_state.setdefault("dst", "Antigua Guatemala")
+st.session_state.setdefault("result", None)
 
-# System status for Sidebar
-status_info = check_system_status()
 
-# Render Sidebar
-render_sidebar(status_info)
+def swap_places():
+    st.session_state.src, st.session_state.dst = st.session_state.dst, st.session_state.src
 
-# Render Main Header
-render_header()
 
-# Main Search Form Container
-with st.container():
-    st.markdown("<div class='custom-card'>", unsafe_allow_html=True)
-    st.markdown("<h3 style='font-size:1.15rem; color:#0F4C81; margin-bottom:1rem; font-weight:700;'>Route Parameters</h3>", unsafe_allow_html=True)
+def use_example(a, b):
+    st.session_state.src, st.session_state.dst = a, b
 
-    col1, col2, col3 = st.columns([1.2, 1.2, 1])
 
-    with col1:
-        source_city = st.text_input(
-            "Source City",
-            value="Guatemala City",
-            placeholder="e.g. Guatemala City",
-            help="Enter origin city or address",
-        )
+def fsb(target, label, **kw):
+    """Full-width form button that works across Streamlit versions."""
+    try:
+        return target.form_submit_button(label, width="stretch", **kw)
+    except TypeError:
+        return target.form_submit_button(label, use_container_width=True, **kw)
 
-    with col2:
-        dest_city = st.text_input(
-            "Destination City",
-            value="Antigua Guatemala",
-            placeholder="e.g. Antigua Guatemala",
-            help="Enter destination city or address",
-        )
 
-    with col3:
-        preference = st.selectbox(
-            "Preference",
-            options=["Fastest", "Cheapest", "Eco Friendly", "Balanced"],
-            index=3,
-            help="Select routing optimization criteria",
-        )
+def choice(label, options, key, default=None, fmt=None):
+    """Pill selector (falls back to radio on older Streamlit versions)."""
+    if hasattr(st, "segmented_control"):
+        kw = {"format_func": fmt} if fmt else {}
+        return st.segmented_control(label, options, default=default, key=key, label_visibility="collapsed", **kw)
+    kw = {"format_func": fmt} if fmt else {}
+    return st.radio(label, options, index=options.index(default) if default in options else 0, key=key,
+                    horizontal=True, label_visibility="collapsed", **kw)
 
-    recommend_clicked = st.button("🚀 Recommend Route", use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
 
-# Store results in session state to persist upon re-renders
-if "recommendation_result" not in st.session_state:
-    st.session_state["recommendation_result"] = None
+dark = st.session_state.get("dark_mode", False)
+inject_css(dark)
+st.toggle("Dark mode", key="dark_mode")
+render_hero(check_system_status())
 
-if recommend_clicked:
-    if not source_city.strip() or not dest_city.strip():
-        st.error("Please enter both Source City and Destination City.")
+# ------------------------------------------------------------ search
+go = False
+with st.container(key="search"):
+    with st.form("search_form", border=False):
+        # The main button comes first in the page so that pressing Enter in a field runs the search
+        # (browsers pick the first submit button). CSS `order` puts it back below the fields visually.
+        go = fsb(st, "Find my route", type="primary", key="go")
+        with st.container(key="places"):
+            c1, c2, c3 = st.columns([10, 1.3, 10], vertical_alignment="bottom")
+            c1.text_input("From", key="src", placeholder="City or address")
+            fsb(c2, "⇄", key="swap", on_click=swap_places, help="Swap start and destination")
+            c3.text_input("To", key="dst", placeholder="City or address")
+        with st.container(key="examples"):
+            st.markdown('<p class="hint" style="margin:.2rem 0 0">Try one of these</p>', unsafe_allow_html=True)
+            e1, e2, e3 = st.columns(3)
+            fsb(e1, "Guatemala City to Antigua", key="ex1", on_click=use_example, args=("Guatemala City", "Antigua Guatemala"))
+            fsb(e2, "Guatemala City to Quetzaltenango", key="ex2", on_click=use_example, args=("Guatemala City", "Quetzaltenango"))
+            fsb(e3, "Guatemala City to Puerto Barrios", key="ex3", on_click=use_example, args=("Guatemala City", "Puerto Barrios"))
+
+# ------------------------------------------------------------ rank bar (live)
+with st.container(key="rankbar"):
+    html('<p class="rk-label">What matters most?</p>')
+    pref = choice("What matters most?", PREFS, "pref", default="Balanced") or "Balanced"
+    html(f'<p class="hint">{HINTS[pref]}</p>')
+    weights = (5, 5, 5)
+    if pref == "Custom":
+        w1, w2, w3 = st.columns(3)
+        weights = (w1.slider("Speed", 0, 10, 5, key="w_time"), w2.slider("Low cost", 0, 10, 5, key="w_cost"),
+                   w3.slider("Low carbon", 0, 10, 5, key="w_co2"))
+
+# ------------------------------------------------------------ compute
+slot = st.empty()
+if go:
+    if not st.session_state.src.strip() or not st.session_state.dst.strip():
+        st.session_state.result = {"error": "Enter both a starting point and a destination."}
     else:
-        with st.spinner("Analyzing road graph, evaluating Dijkstra path, and scoring candidate modes..."):
-            result = calculate_route_recommendation(source_city.strip(), dest_city.strip(), preference)
-            st.session_state["recommendation_result"] = result
+        slot.markdown(skeleton_html(), unsafe_allow_html=True)
+        res = calculate_route_recommendation(st.session_state.src.strip(), st.session_state.dst.strip(), "Balanced")
+        st.session_state.result = res
+        if isinstance(res, dict) and res.get("success"):
+            st.session_state.pop("inspect", None)
+            st.toast(f"Route found: {res['src_geo']['place'].split(',')[0]} to {res['dst_geo']['place'].split(',')[0]}", icon="✅")
+    slot.empty()
 
-# Render Results section if available
-res = st.session_state.get("recommendation_result")
+# ------------------------------------------------------------ results
+res = st.session_state.result
+if not res:
+    render_empty()
+elif "error" in res:
+    render_callout("We couldn't plan that trip", f"{res['error']} Check the spelling, or add the country, for example “Antigua, Guatemala”.")
+elif res.get("success"):
+    cands = res["candidates"]
+    colors = {c["mode"]: OPT_COLORS[i % len(OPT_COLORS)] for i, c in enumerate(cands)}
+    ranked = rank_options(cands, pref, weights)
+    best = ranked[0]
 
-if res:
-    if "error" in res:
-        st.error(res["error"])
-    elif res.get("success"):
-        best_route = res["best_route"]
+    # Jump the "viewing" pill to the new winner whenever the ranking changes.
+    sig = (pref, weights, best["mode"], id(res))
+    if st.session_state.get("_sig") != sig:
+        st.session_state["_sig"] = sig
+        st.session_state["inspect"] = best["mode"]
 
-        st.markdown("---")
-        st.markdown("<h2 style='font-size:1.4rem; color:#0F4C81; font-weight:700; margin-bottom:1rem;'>Recommendation Analysis</h2>", unsafe_allow_html=True)
+    with st.container(key="toolbar"):
+        t1, t2 = st.columns([3, 1.4], vertical_alignment="bottom")
+        with t1:
+            html('<p class="rk-label" style="margin-bottom:.4rem">Viewing</p>')
+            modes = [c["mode"] for c in ranked]
+            picked = choice("Viewing", modes, "inspect", default=None,
+                            fmt=lambda m: f"★ {m}" if m == best["mode"] else m) or best["mode"]
+        with t2:
+            travellers = st.slider("Travellers", 1, 8, 1, key="travellers")
+    opt = next(c for c in ranked if c["mode"] == picked)
 
-        # 1. Top Metric Cards
-        render_metric_cards(best_route)
+    render_ticket(opt, ranked, res["src_geo"]["place"], res["dst_geo"]["place"], pref, travellers)
+    render_map(res["src_geo"], res["dst_geo"], res["route_coords"], dark, f"map_{int(dark)}_{st.session_state.src}_{st.session_state.dst}")
 
-        # 2. Recommended Route Highlight Card
-        render_recommended_route_card(best_route, res["src_geo"]["place"], res["dst_geo"]["place"])
+    left, right = st.columns([1.65, 1])
+    with left:
+        render_compare(ranked, best["mode"], colors)
+    with right:
+        render_radar(cands, colors)
 
-        # 3. Interactive Folium Map
-        render_folium_map(res["src_geo"], res["dst_geo"], res["route_coords"])
+    df = pd.DataFrame({
+        "Option": [c["mode"] for c in ranked], "Distance (km)": [c["distance_km"] for c in ranked],
+        "Time (h)": [c["travel_time_hr"] for c in ranked], "Cost (USD)": [c["travel_cost"] for c in ranked],
+        "Carbon (kg CO2)": [c["carbon_emission"] for c in ranked], "Transfers": [c["transfers"] for c in ranked],
+        "Score (%)": [c["score_pct"] for c in ranked],
+    })
+    st.download_button("Download comparison as CSV", df.to_csv(index=False).encode("utf-8"), "route_comparison.csv", "text/csv")
 
-        # 4. Candidate Routes Table (Highlighting Recommended in Green)
-        df_display = render_candidate_table(res["candidates"], best_route["mode"])
-
-        # 5. Download Section
-        st.markdown("<br/>", unsafe_allow_html=True)
-        render_download_section(df_display)
-
-# Render Footer
 render_footer()
