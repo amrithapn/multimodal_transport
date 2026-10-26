@@ -255,9 +255,13 @@ def rank_options(cands, pref, weights=(5, 5, 5)):
 # --------------------------------------------------------------- hero
 def render_hero(status):
     ok_m, ok_g = status["model_loaded"], status["graph_loaded"]
+    data_source = status.get("data_source", "local")
+    is_live = "HDFS" in str(data_source)
+    source_label = "📡 Live from HDFS + Spark" if is_live else "💾 Local cache"
     chips = (f'<span class="chip {"" if ok_m else "bad"}"><b></b>{"Model ready" if ok_m else "Model missing"}</span>'
              f'<span class="chip {"" if ok_g else "bad"}"><b></b>'
-             + (f'{status["graph_nodes"]:,} road nodes loaded' if ok_g else "Road graph missing") + "</span>")
+             + (f'{status["graph_nodes"]:,} road nodes loaded' if ok_g else "Road graph missing") + "</span>"
+             + f'<span class="chip"><b></b>{source_label}</span>')
     html(f"""
     <section class="hero">
       <div class="hero-nav"><div class="brand"><i></i>Multimodal Transport</div>{chips}</div>

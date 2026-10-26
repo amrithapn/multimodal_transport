@@ -9,7 +9,6 @@ def create_spark_session():
     spark = (
         SparkSession.builder
         .appName("MultimodalTransportCA")
-        .master("local[*]")
         .getOrCreate()
     )
 

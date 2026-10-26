@@ -8,6 +8,7 @@ import streamlit as st
 
 # Add project root and src/routing to sys.path for seamless imports
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+UI_DIR = os.path.dirname(__file__)
 ROUTING_DIR = os.path.join(PROJECT_ROOT, "src", "routing")
 
 if PROJECT_ROOT not in sys.path:
@@ -24,16 +25,17 @@ from generate_candidates import (
 )
 
 
-@st.cache_resource
 def load_cached_graph():
     """
-    Load NetworkX graph with caching for performance.
+    Load the road network graph.
+    Tries Hadoop HDFS → Apache Spark pipeline first (live data).
+    Falls back to the pre-built road_graph.pkl if Spark/HDFS is unavailable.
     """
-    graph_path = os.path.join(PROJECT_ROOT, "data", "graph", "road_graph.pkl")
-    if not os.path.exists(graph_path):
-        return None
-    with open(graph_path, "rb") as f:
-        return pickle.load(f)
+    if UI_DIR not in sys.path:
+        sys.path.insert(0, UI_DIR)
+    from hdfs_loader import load_graph_from_hdfs
+    G, source, stats = load_graph_from_hdfs()
+    return G
 
 
 @st.cache_resource
@@ -50,15 +52,22 @@ def load_cached_model():
 def check_system_status():
     """
     Check if models, graph, and dependencies are loaded properly.
+    Reports whether the graph was loaded live from HDFS or from local cache.
     """
-    graph = load_cached_graph()
+    if UI_DIR not in sys.path:
+        sys.path.insert(0, UI_DIR)
+    from hdfs_loader import load_graph_from_hdfs
+    G, source, stats = load_graph_from_hdfs()
     model = load_cached_model()
     return {
-        "graph_loaded": graph is not None,
+        "graph_loaded": G is not None,
         "model_loaded": model is not None,
-        "graph_nodes": len(graph.nodes) if graph else 0,
-        "graph_edges": len(graph.edges) if graph else 0,
-        "system_ok": (graph is not None and model is not None),
+        "graph_nodes": len(G.nodes) if G else 0,
+        "graph_edges": len(G.edges) if G else 0,
+        "system_ok": (G is not None and model is not None),
+        "data_source": source,
+        "hdfs_path": stats.get("hdfs_path"),
+        "spark_master": stats.get("spark_master"),
     }
 
 
